@@ -1,0 +1,57 @@
+services:
+  traefik:
+    image: traefik:ramequin
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "8080:8080"
+    command:
+      - "--api.insecure=true"
+      - "--api.dashboard=true"
+
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.forwardedHeaders.insecure=true"
+      # Enable local plugin - must match the Go module path
+      - "--experimental.localPlugins.get-real-ip.moduleName=github.com/Paxxs/traefik-get-real-ip"
+
+      - "--log.level=INFO"
+      - "--accesslog=true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Mount the plugin source code to the correct location for local development
+      - ../:/plugins-local/src/github.com/Paxxs/traefik-get-real-ip:ro
+    labels:
+      # Enable self‑routing
+      - "traefik.enable=true"
+
+      # Dashboard router
+      - "traefik.http.routers.dashboard.rule=Host(`dashboard.localhost`)"
+      - "traefik.http.routers.dashboard.entrypoints=web"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      - "traefik.http.routers.dashboard.tls=true"
+
+  whoami:
+    image: traefik/whoami:v1.8
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.whoami.rule=Host(`whoami.localhost`)"
+      - "traefik.http.routers.whoami.entrypoints=web"
+      # Apply the real-ip middleware
+      - "traefik.http.routers.whoami.middlewares=get-real-ip"
+      # Configure the real-ip plugin middleware with multiple CDN configurations
+      - "traefik.http.middlewares.get-real-ip.plugin.get-real-ip.Proxy[0].proxyHeadername=X-From-Cdn"
+      - "traefik.http.middlewares.get-real-ip.plugin.get-real-ip.Proxy[0].proxyHeadervalue=cf-foo"
+      - "traefik.http.middlewares.get-real-ip.plugin.get-real-ip.Proxy[0].realIP=Cf-Connecting-Ip"
+      - "traefik.http.middlewares.get-real-ip.plugin.get-real-ip.Proxy[0].overwriteXFF=true"
+      - "traefik.http.middlewares.get-real-ip.plugin.get-real-ip.Proxy[1].proxyHeadername=X-From-Cdn"
+      - "traefik.http.middlewares.get-real-ip.plugin.get-real-ip.Proxy[1].proxyHeadervalue=mf-bar"
+      - "traefik.http.middlewares.get-real-ip.plugin.get-real-ip.Proxy[1].realIP=Client-Ip"
+      - "traefik.http.middlewares.get-real-ip.plugin.get-real-ip.Proxy[2].proxyHeadername=X-From-Cdn"
+      - "traefik.http.middlewares.get-real-ip.plugin.get-real-ip.Proxy[2].proxyHeadervalue=mf-fun"
+      - "traefik.http.middlewares.get-real-ip.plugin.get-real-ip.Proxy[2].realIP=X-Forwarded-For"
+      - "traefik.http.middlewares.get-real-ip.plugin.get-real-ip.Proxy[3].proxyHeadername=*"
+      - "traefik.http.middlewares.get-real-ip.plugin.get-real-ip.Proxy[3].realIP=RemoteAddr"
