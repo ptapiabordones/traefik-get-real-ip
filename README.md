@@ -52,7 +52,7 @@ Rules > Transform Rules > HTTP Request Header Modification > Add
 
 Plugin Info:
 - moduleName: `github.com/Paxxs/traefik-get-real-ip`
-- version: `v1.0.2`
+- version: `[Please fill the latest version !]`
 
 Traefik Configuration:
 - yml
@@ -117,21 +117,21 @@ http:
 
 ## Configuration Options
 
-| Option            | Type   | Required | Default | Description                                                 |
-|-------------------|--------|----------|---------|-------------------------------------------------------------|
-| enableLog         | bool   | No       | false   | Enable detailed logging for debugging purposes              |
-| deny403OnFail     | bool   | No       | false   | When true, returns a 403 Forbidden response if no matching CDN header is found |
-| eraseProxyHeaders | bool   | No       | false   | When true, erases CDN-specific headers after processing to prevent leaking CDN identification |
-| Proxy             | array  | Yes      | -       | Array of proxy configurations                               |
+| Option            | Type  | Required | Default | Description                                                                                   |
+| ----------------- | ----- | -------- | ------- | --------------------------------------------------------------------------------------------- |
+| enableLog         | bool  | No       | false   | Enable detailed logging for debugging purposes                                                |
+| deny403OnFail     | bool  | No       | false   | When true, returns a 403 Forbidden response if no matching CDN header is found                |
+| eraseProxyHeaders | bool  | No       | false   | When true, erases CDN-specific headers after processing to prevent leaking CDN identification |
+| Proxy             | array | Yes      | -       | Array of proxy configurations                                                                 |
 
 ### Proxy Configuration
 
-| Option           | Type   | Required | Default | Description                                                 |
-|------------------|--------|----------|---------|-------------------------------------------------------------|
-| proxyHeadername  | string | Yes      | -       | The header name to check for CDN identification. Use "*" to match all sources |
-| proxyHeadervalue | string | No       | -       | The expected value for the header. Not required when proxyHeadername is "*" |
+| Option           | Type   | Required | Default | Description                                                                                                 |
+| ---------------- | ------ | -------- | ------- | ----------------------------------------------------------------------------------------------------------- |
+| proxyHeadername  | string | Yes      | -       | The header name to check for CDN identification. Use "*" to match all sources                               |
+| proxyHeadervalue | string | No       | -       | The expected value for the header. Not required when proxyHeadername is "*"                                 |
 | realIP           | string | Yes      | -       | The header to extract the real IP from. Special value "RemoteAddr" will use the connection's remote address |
-| OverwriteXFF     | bool   | No       | false   | When set to true, also overwrites the X-Forwarded-For header with the extracted real IP (v1.0.2+) |
+| OverwriteXFF     | bool   | No       | false   | When set to true, also overwrites the X-Forwarded-For header with the extracted real IP (v1.0.2+)           |
 
 ### Processing Logic
 

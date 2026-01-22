@@ -50,7 +50,7 @@
 
 插件信息:
 - 模块名称: `github.com/Paxxs/traefik-get-real-ip`
-- 版本: `v1.0.2`
+- 版本: `[请填写最新版本!]`
 
 Traefik 配置:
 - yml
@@ -115,21 +115,21 @@ http:
 
 ## 配置选项
 
-| 选项              | 类型   | 必需   | 默认值  | 说明                                                     |
-|------------------|--------|--------|---------|----------------------------------------------------------|
-| enableLog        | bool   | 否     | false   | 启用详细日志记录，用于调试目的                              |
-| deny403OnFail    | bool   | 否     | false   | 设为true时，如果没有找到匹配的CDN头部，则返回403禁止访问响应 |
-| eraseProxyHeaders| bool   | 否     | false   | 设为true时，处理后会擦除CDN特定头部，防止CDN识别信息泄露     |
-| Proxy            | array  | 是     | -       | 代理配置数组                                               |
+| 选项              | 类型  | 必需 | 默认值 | 说明                                                         |
+| ----------------- | ----- | ---- | ------ | ------------------------------------------------------------ |
+| enableLog         | bool  | 否   | false  | 启用详细日志记录，用于调试目的                               |
+| deny403OnFail     | bool  | 否   | false  | 设为true时，如果没有找到匹配的CDN头部，则返回403禁止访问响应 |
+| eraseProxyHeaders | bool  | 否   | false  | 设为true时，处理后会擦除CDN特定头部，防止CDN识别信息泄露     |
+| Proxy             | array | 是   | -      | 代理配置数组                                                 |
 
 ### Proxy 配置
 
-| 选项             | 类型   | 必需   | 默认值  | 说明                                                     |
-|-----------------|--------|--------|---------|----------------------------------------------------------|
-| proxyHeadername | string | 是     | -       | 用于CDN识别的头部名称。使用"*"可匹配所有来源                |
-| proxyHeadervalue| string | 否     | -       | 头部的预期值。当proxyHeadername为"*"时不需要                |
-| realIP          | string | 是     | -       | 用于提取真实IP的头部。特殊值"RemoteAddr"将使用连接的远程地址  |
-| OverwriteXFF    | bool   | 否     | false   | 设为true时，还会用提取的真实IP覆盖X-Forwarded-For头部(v1.0.2+)|
+| 选项             | 类型   | 必需 | 默认值 | 说明                                                           |
+| ---------------- | ------ | ---- | ------ | -------------------------------------------------------------- |
+| proxyHeadername  | string | 是   | -      | 用于CDN识别的头部名称。使用"*"可匹配所有来源                   |
+| proxyHeadervalue | string | 否   | -      | 头部的预期值。当proxyHeadername为"*"时不需要                   |
+| realIP           | string | 是   | -      | 用于提取真实IP的头部。特殊值"RemoteAddr"将使用连接的远程地址   |
+| OverwriteXFF     | bool   | 否   | false  | 设为true时，还会用提取的真实IP覆盖X-Forwarded-For头部(v1.0.2+) |
 
 ### 处理逻辑
 
