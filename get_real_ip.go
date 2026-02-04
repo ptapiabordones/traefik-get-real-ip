@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 const (
@@ -145,9 +146,14 @@ func (g *GetRealIP) getIP(s string) net.IP {
 }
 
 // log is a method of GetRealIP that outputs logs only if logging is enabled.
-// Usage is similar to fmt.Sprintf, but it automatically includes a prefix and newline.
+// Logs to /var/log/traefik/plugin-real-ip.log with timestamps.
 func (g *GetRealIP) log(format string, a ...interface{}) {
 	if g.enableLog {
-		os.Stdout.WriteString("[get-realip] " + fmt.Sprintf(format, a...) + "\n")
+		logFile, err := os.OpenFile("/var/log/traefik/plugin-real-ip.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err == nil {
+			defer logFile.Close()
+			timestamp := time.Now().Format("2006-01-02T15:04:05-07:00")
+			logFile.WriteString(fmt.Sprintf("[%s] [get-realip] %s\n", timestamp, fmt.Sprintf(format, a...)))
+		}
 	}
 }

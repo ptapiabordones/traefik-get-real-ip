@@ -1,0 +1,63 @@
+name: Build and Push traefik-eas
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      traefik_version:
+        description: 'Traefik base version'
+        required: false
+        default: '3.6.7'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ptapiabordones/traefik-eas
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set Traefik version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "traefik_version=${{ github.event.inputs.traefik_version }}" >> $GITHUB_OUTPUT
+          else
+            echo "traefik_version=3.6.7" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.version.outputs.traefik_version }}
+            type=raw,value=latest
+            type=sha,prefix=${{ steps.version.outputs.traefik_version }}-
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            TRAEFIK_VERSION=${{ steps.version.outputs.traefik_version }}
