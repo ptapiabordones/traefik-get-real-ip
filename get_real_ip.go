@@ -199,6 +199,13 @@ func (g *GetRealIP) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	if (g.restrict || g.sanitizeUnmatched) && realIPStr == "" && peer != nil {
 		req.Header.Set(xRealIP, peer.String())
 		req.Header.Set(xForwardedFor, peer.String())
+		// The configured "real IP" headers (Cf-Connecting-Ip) came from an untrusted sender: remove them so
+		// access logs and dashboards never record a client-chosen IP as if it were the real one.
+		for _, p := range g.proxy {
+			if p.RealIP != "" && p.RealIP != "RemoteAddr" && http.CanonicalHeaderKey(p.RealIP) != xForwardedFor {
+				req.Header.Del(p.RealIP)
+			}
+		}
 	}
 
 	// Erase CDN secret headers if enabled and we found a matching proxy

@@ -39,6 +39,10 @@ func TestMissingSecretCannotSpoof(t *testing.T) {
 			t.Fatalf("%s = %q, want the peer 192.168.1.254", name, got)
 		}
 	}
+	// the forged Cf-Connecting-Ip must not survive into the logs either
+	if got := h.Get("Cf-Connecting-Ip"); got != "" {
+		t.Fatalf("untrusted Cf-Connecting-Ip kept: %q", got)
+	}
 }
 
 func TestWrongSecretCannotSpoof(t *testing.T) {
