@@ -143,3 +143,23 @@ http:
 6. If `eraseProxyHeaders` is true, the plugin removes the CDN-specific headers (the matched `proxyHeadername` and `realIP` headers) to prevent leaking CDN identification to downstream services. Standard headers like X-Forwarded-For are preserved.
 7. If no matching proxy configuration is found and `deny403OnFail` is set to true, the plugin returns a 403 Forbidden response, preventing further request processing.
 8. Otherwise, the request is then passed to the next handler.
+
+## EAS: `trustedPeers` (2026-10-28)
+
+By default an entry with `proxyHeadername: '*'` believes `Cf-Connecting-Ip` from **any** client, so anyone who reaches the origin directly can choose the IP Traefik, CrowdSec and the apps see. `trustedPeers` (per entry) restricts an entry to the TCP peers listed there:
+
+```yaml
+Proxy:
+- proxyHeadername: '*'
+  realIP: CF-Connecting-IP
+  OverwriteXFF: true
+  trustedPeers:            # CIDRs or single IPs of the Cloudflare edge
+  - 173.245.48.0/20
+  - 2606:4700::/32
+```
+
+- Peer not in the list: the entry is skipped. If any entry uses `trustedPeers`, `X-Real-Ip` and `X-Forwarded-For` are then overwritten with the peer address (client-supplied values never pass); with `deny403OnFail: true` the request gets 403.
+- Without `trustedPeers` the behaviour is exactly the previous one.
+- Invalid entries are ignored; an entry whose list is entirely invalid trusts nobody (a typo cannot open it up).
+- It replaces the old `trustedProxies` key found in EAS configs, which this plugin never implemented (it was silently ignored).
+- Only meaningful where the TCP peer identifies the proxy (microserver1: the Cloudflare edge). On obti.cl the PA-850 source-NATs inbound traffic to 192.168.1.254, so the peer says nothing about the sender there.

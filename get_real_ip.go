@@ -21,6 +21,10 @@ type Proxy struct {
 	ProxyHeadervalue string `yaml:"proxyHeadervalue"`
 	RealIP           string `yaml:"realIP"`
 	OverwriteXFF     bool   `yaml:"overwriteXFF"` // override X-Forwarded-For
+	// TrustedPeers lists the CIDRs (or single IPs) of the TCP peers allowed to set the headers
+	// of this entry (e.g. the Cloudflare edge ranges). Empty = any peer (legacy behaviour).
+	// NOT the same as the unused "trustedProxies" key found in older configs.
+	TrustedPeers []string `yaml:"trustedPeers"`
 }
 
 // Config the plugin configuration.
@@ -48,6 +52,50 @@ type GetRealIP struct {
 	enableLog         bool
 	deny403OnFail     bool
 	eraseProxyHeaders bool
+	peers             [][]*net.IPNet // parsed TrustedPeers, same index as proxy; nil = any peer
+	restrict          bool           // at least one entry restricts its peers
+}
+
+// parsePeers turns CIDRs / plain IPs into networks. Invalid entries are skipped, so a typo
+// can never open the entry to everyone: a restricted entry whose list is all invalid trusts nobody.
+func parsePeers(entries []string) []*net.IPNet {
+	nets := []*net.IPNet{}
+	for _, e := range entries {
+		e = strings.TrimSpace(e)
+		if _, n, err := net.ParseCIDR(e); err == nil {
+			nets = append(nets, n)
+			continue
+		}
+		if ip := net.ParseIP(e); ip != nil {
+			bits := 128
+			if ip.To4() != nil {
+				bits = 32
+			}
+			nets = append(nets, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+		}
+	}
+	return nets
+}
+
+// peerIP returns the TCP peer address of the request (no port).
+func peerIP(req *http.Request) net.IP {
+	host, _, err := net.SplitHostPort(req.RemoteAddr)
+	if err != nil {
+		host = req.RemoteAddr
+	}
+	return net.ParseIP(host)
+}
+
+func inNets(ip net.IP, nets []*net.IPNet) bool {
+	if ip == nil {
+		return false
+	}
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // New creates and returns a new realip plugin instance.
@@ -55,7 +103,18 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	// Always log instance creation regardless of log settings
 	fmt.Printf("[get-realip] Instance created with %d proxy configurations\n", len(config.Proxy))
 
+	peers := make([][]*net.IPNet, len(config.Proxy))
+	restrict := false
+	for i, p := range config.Proxy {
+		if len(p.TrustedPeers) > 0 {
+			peers[i] = parsePeers(p.TrustedPeers)
+			restrict = true
+		}
+	}
+
 	return &GetRealIP{
+		peers:             peers,
+		restrict:          restrict,
 		next:              next,
 		name:              name,
 		proxy:             config.Proxy,
@@ -71,7 +130,13 @@ func (g *GetRealIP) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	var foundMatchingProxy bool
 	var matchedProxy Proxy
 
-	for _, proxy := range g.proxy {
+	peer := peerIP(req)
+
+	for idx, proxy := range g.proxy {
+		if g.peers[idx] != nil && !inNets(peer, g.peers[idx]) {
+			g.log("Skipping entry %d: peer %v is not in trustedPeers", idx, peer)
+			continue
+		}
 		if proxy.ProxyHeadername == "*" || req.Header.Get(proxy.ProxyHeadername) == proxy.ProxyHeadervalue {
 			foundMatchingProxy = true
 			matchedProxy = proxy
@@ -113,6 +178,12 @@ func (g *GetRealIP) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		g.log("No matching proxy configuration found, returning 403")
 		rw.WriteHeader(http.StatusForbidden)
 		return
+	}
+
+	// Restricted mode and nothing was trusted: never let client-supplied forwarding headers through.
+	if g.restrict && realIPStr == "" && peer != nil {
+		req.Header.Set(xRealIP, peer.String())
+		req.Header.Set(xForwardedFor, peer.String())
 	}
 
 	// Erase CDN secret headers if enabled and we found a matching proxy
