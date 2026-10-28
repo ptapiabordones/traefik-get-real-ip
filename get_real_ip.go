@@ -25,6 +25,10 @@ type Proxy struct {
 	// of this entry (e.g. the Cloudflare edge ranges). Empty = any peer (legacy behaviour).
 	// NOT the same as the unused "trustedProxies" key found in older configs.
 	TrustedPeers []string `yaml:"trustedPeers"`
+	// EraseHeader removes this entry's ProxyHeadername (the CDN secret) from the request once it matched,
+	// so the secret never reaches the backends or the access log. Unlike the global eraseProxyHeaders it
+	// does NOT touch RealIP (Cf-Connecting-Ip), which the access log / Loki dashboards rely on.
+	EraseHeader bool `yaml:"eraseHeader"`
 }
 
 // Config the plugin configuration.
@@ -33,6 +37,9 @@ type Config struct {
 	EnableLog         bool    `yaml:"enableLog"`         // Enable logging output
 	Deny403OnFail     bool    `yaml:"deny403OnFail"`     // Return 403 when no matching CDN header found
 	EraseProxyHeaders bool    `yaml:"eraseProxyHeaders"` // Erase CDN secret headers after processing
+	// SanitizeUnmatched: when no entry produced a client IP (e.g. the CDN secret header is missing or
+	// wrong), overwrite X-Real-Ip and X-Forwarded-For with the TCP peer so client-supplied values never pass.
+	SanitizeUnmatched bool `yaml:"sanitizeUnmatched"`
 }
 
 // CreateConfig creates the default plugin configuration.
@@ -54,6 +61,7 @@ type GetRealIP struct {
 	eraseProxyHeaders bool
 	peers             [][]*net.IPNet // parsed TrustedPeers, same index as proxy; nil = any peer
 	restrict          bool           // at least one entry restricts its peers
+	sanitizeUnmatched bool
 }
 
 // parsePeers turns CIDRs / plain IPs into networks. Invalid entries are skipped, so a typo
@@ -115,6 +123,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	return &GetRealIP{
 		peers:             peers,
 		restrict:          restrict,
+		sanitizeUnmatched: config.SanitizeUnmatched,
 		next:              next,
 		name:              name,
 		proxy:             config.Proxy,
@@ -180,8 +189,14 @@ func (g *GetRealIP) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Restricted mode and nothing was trusted: never let client-supplied forwarding headers through.
-	if g.restrict && realIPStr == "" && peer != nil {
+	// Drop the CDN secret of the entry that matched (keeps Cf-Connecting-Ip for logs/dashboards).
+	if foundMatchingProxy && realIPStr != "" && matchedProxy.EraseHeader && matchedProxy.ProxyHeadername != "*" {
+		req.Header.Del(matchedProxy.ProxyHeadername)
+	}
+
+	// Restricted mode (or sanitizeUnmatched) and nothing was trusted: never let client-supplied
+	// forwarding headers through.
+	if (g.restrict || g.sanitizeUnmatched) && realIPStr == "" && peer != nil {
 		req.Header.Set(xRealIP, peer.String())
 		req.Header.Set(xForwardedFor, peer.String())
 	}

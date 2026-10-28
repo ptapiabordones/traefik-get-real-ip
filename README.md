@@ -163,3 +163,20 @@ Proxy:
 - Invalid entries are ignored; an entry whose list is entirely invalid trusts nobody (a typo cannot open it up).
 - It replaces the old `trustedProxies` key found in EAS configs, which this plugin never implemented (it was silently ignored).
 - Only meaningful where the TCP peer identifies the proxy (microserver1: the Cloudflare edge). On obti.cl the PA-850 source-NATs inbound traffic to 192.168.1.254, so the peer says nothing about the sender there.
+
+### Secret-header mode (`eraseHeader`, `sanitizeUnmatched`) - when the TCP peer says nothing
+
+Behind a NAT/firewall that hides the sender (obti.cl: the PA-850 source-NATs to 192.168.1.254) `trustedPeers` cannot work. Make Cloudflare add a **secret** request header (a Transform Rule per zone) and trust only requests that carry it:
+
+```yaml
+Proxy:
+- proxyHeadername: X-Eas-Edge        # header set by the Cloudflare Transform Rule
+  proxyHeadervalue: '{{ env "CF_EDGE_TOKEN" }}'
+  realIP: CF-Connecting-IP
+  OverwriteXFF: true
+  eraseHeader: true                  # drop ONLY the secret before the backends / access log
+sanitizeUnmatched: true              # no valid secret => X-Real-Ip/X-Forwarded-For = TCP peer
+```
+
+- **Do not use the global `eraseProxyHeaders: true`**: it also deletes `Cf-Connecting-Ip`, which then disappears from `access.log` (`request_Cf-Connecting-Ip`) and breaks the Loki dashboards. `eraseHeader` removes only the secret.
+- Use a random secret (not a constant like `cf-foo`, which is public in the repo). Introduce it in two steps to avoid a gap: first the Cloudflare rule, then the origin config.
