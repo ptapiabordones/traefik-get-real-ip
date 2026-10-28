@@ -89,3 +89,13 @@ func TestSecretIsKeptWhenEraseHeaderIsOff(t *testing.T) {
 		t.Fatalf("secret = %q, want it kept when eraseHeader is off", got)
 	}
 }
+
+// An empty secret (e.g. an empty file behind the env var) must never open the gate to requests without the header.
+func TestEmptySecretNeverMatches(t *testing.T) {
+	cfg := secretConfig(false, true)
+	cfg.Proxy[0].ProxyHeadervalue = ""
+	h := run(t, cfg, "192.168.1.254:5000", map[string]string{"Cf-Connecting-Ip": "203.0.113.9"})
+	if got := h.Get("X-Real-Ip"); got != "192.168.1.254" {
+		t.Fatalf("X-Real-Ip = %q, want the peer: an empty secret must not match", got)
+	}
+}

@@ -146,6 +146,12 @@ func (g *GetRealIP) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			g.log("Skipping entry %d: peer %v is not in trustedPeers", idx, peer)
 			continue
 		}
+		// A secret-gated entry with an empty secret would match every request that lacks the header
+		// (empty == empty): treat it as misconfigured and never use it.
+		if proxy.ProxyHeadername != "*" && proxy.ProxyHeadervalue == "" {
+			g.log("Skipping entry %d: %s has an empty proxyHeadervalue", idx, proxy.ProxyHeadername)
+			continue
+		}
 		if proxy.ProxyHeadername == "*" || req.Header.Get(proxy.ProxyHeadername) == proxy.ProxyHeadervalue {
 			foundMatchingProxy = true
 			matchedProxy = proxy
