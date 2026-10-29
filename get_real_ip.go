@@ -179,7 +179,9 @@ func (g *GetRealIP) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		if proxy.ProxyHeadername == "*" || req.Header.Get(proxy.ProxyHeadername) == proxy.ProxyHeadervalue {
 			foundMatchingProxy = true
 			matchedProxy = proxy
-			g.log("Processing proxy configuration: %s (%s)", proxy.ProxyHeadervalue, proxy.ProxyHeadername)
+			// Never log proxyHeadervalue: for a secret-header entry it IS the Cloudflare edge secret, and this log is a
+			// world-readable file (found 2026-10-29: the secret was written there on every request).
+			g.log("Processing proxy configuration: entry %d (%s)", idx, proxy.ProxyHeadername)
 
 			// CDN来源确定
 			nIP := req.Header.Get(proxy.RealIP)
