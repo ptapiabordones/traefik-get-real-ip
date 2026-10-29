@@ -1,6 +1,9 @@
 package traefik_get_real_ip_test
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	plugin "github.com/ptapiabordones/traefik-get-real-ip"
@@ -97,5 +100,69 @@ func TestEmptySecretNeverMatches(t *testing.T) {
 	h := run(t, cfg, "192.168.1.254:5000", map[string]string{"Cf-Connecting-Ip": "203.0.113.9"})
 	if got := h.Get("X-Real-Ip"); got != "192.168.1.254" {
 		t.Fatalf("X-Real-Ip = %q, want the peer: an empty secret must not match", got)
+	}
+}
+
+// chain applies the same middleware twice, like EAS does (entrypoint middlewares + router middlewares).
+func chain(t *testing.T, cfg *plugin.Config, remoteAddr string, headers map[string]string) http.Header {
+	t.Helper()
+	var seen http.Header
+	final := http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) { seen = r.Header.Clone() })
+	second, err := plugin.New(context.Background(), final, cfg, "router")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := plugin.New(context.Background(), second, cfg, "entrypoint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://localhost/", nil)
+	req.RemoteAddr = remoteAddr
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	first.ServeHTTP(httptest.NewRecorder(), req)
+	return seen
+}
+
+// The incident of 2026-10-28: with eraseHeader the second pass lost the real IP. It must keep it now.
+func TestTwoPassesWithEraseHeaderKeepTheRealIP(t *testing.T) {
+	h := chain(t, secretConfig(true, true), "192.168.1.254:5000", map[string]string{
+		"X-Eas-Edge": edgeSecret, "Cf-Connecting-Ip": "203.0.113.9", "Cf-Ipcountry": "CL",
+	})
+	if got := h.Get("X-Real-Ip"); got != "203.0.113.9" {
+		t.Fatalf("X-Real-Ip = %q, want 203.0.113.9 after two passes", got)
+	}
+	if got := h.Get("X-Forwarded-For"); got != "203.0.113.9" {
+		t.Fatalf("X-Forwarded-For = %q, want 203.0.113.9 after two passes", got)
+	}
+	if got := h.Get("Cf-Connecting-Ip"); got != "203.0.113.9" {
+		t.Fatalf("Cf-Connecting-Ip = %q, must survive both passes (access log / Loki)", got)
+	}
+	if got := h.Get("X-Eas-Edge"); got != "" {
+		t.Fatalf("secret still present after the chain: %q", got)
+	}
+}
+
+// A forged request stays sanitized through both passes.
+func TestTwoPassesStillSanitizeForgedRequests(t *testing.T) {
+	h := chain(t, secretConfig(true, true), "192.168.1.254:5000", spoof)
+	for _, name := range []string{"X-Real-Ip", "X-Forwarded-For"} {
+		if got := h.Get(name); got != "192.168.1.254" {
+			t.Fatalf("%s = %q, want the peer", name, got)
+		}
+	}
+	if got := h.Get("Cf-Connecting-Ip"); got != "" {
+		t.Fatalf("forged Cf-Connecting-Ip survived: %q", got)
+	}
+}
+
+// A client cannot skip the check by sending headers that look like a previous pass.
+func TestClientCannotFakeAnEarlierPass(t *testing.T) {
+	h := chain(t, secretConfig(true, true), "192.168.1.254:5000", map[string]string{
+		"Cf-Connecting-Ip": "203.0.113.9", "X-Real-Ip": "198.51.100.7", "Eas.real-ip.verified": "203.0.113.9",
+	})
+	if got := h.Get("X-Real-Ip"); got != "192.168.1.254" {
+		t.Fatalf("X-Real-Ip = %q, want the peer", got)
 	}
 }

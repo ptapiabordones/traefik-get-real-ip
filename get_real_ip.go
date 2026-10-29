@@ -13,6 +13,13 @@ import (
 const (
 	xRealIP       = "X-Real-Ip"
 	xForwardedFor = "X-Forwarded-For"
+
+	// verifiedCtxKey marks (in the request context, which a client cannot touch and which never leaves
+	// Traefik) that an earlier pass of this middleware already resolved the client IP. A plain string key is
+	// used on purpose so every instance agrees on it. EAS applies real-ip-foo twice per request (entrypoint
+	// middlewares + every router): without this mark the second pass no longer sees the CDN secret that
+	// eraseHeader removed in the first one, sanitizes, and loses the real client IP.
+	verifiedCtxKey = "eas.real-ip.verified"
 )
 
 // Proxy 配置文件中的数组结构
@@ -135,6 +142,12 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 // 真正干事情了
 func (g *GetRealIP) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	if req.Context().Value(verifiedCtxKey) != nil {
+		g.log("Already resolved by an earlier pass, skipping")
+		g.next.ServeHTTP(rw, req)
+		return
+	}
+
 	var realIPStr string
 	var foundMatchingProxy bool
 	var matchedProxy Proxy
@@ -228,6 +241,10 @@ func (g *GetRealIP) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			req.Header.Del(matchedProxy.RealIP)
 			g.log("Erased header: %s", matchedProxy.RealIP)
 		}
+	}
+
+	if realIPStr != "" {
+		req = req.WithContext(context.WithValue(req.Context(), verifiedCtxKey, realIPStr))
 	}
 
 	g.next.ServeHTTP(rw, req)
