@@ -13,6 +13,13 @@ import (
 const (
 	xRealIP       = "X-Real-Ip"
 	xForwardedFor = "X-Forwarded-For"
+
+	// verifiedCtxKey marks (in the request context, which a client cannot touch and which never leaves
+	// Traefik) that an earlier pass of this middleware already resolved the client IP. A plain string key is
+	// used on purpose so every instance agrees on it. EAS applies real-ip-foo twice per request (entrypoint
+	// middlewares + every router): without this mark the second pass no longer sees the CDN secret that
+	// eraseHeader removed in the first one, sanitizes, and loses the real client IP.
+	verifiedCtxKey = "eas.real-ip.verified"
 )
 
 // Proxy 配置文件中的数组结构
@@ -21,6 +28,14 @@ type Proxy struct {
 	ProxyHeadervalue string `yaml:"proxyHeadervalue"`
 	RealIP           string `yaml:"realIP"`
 	OverwriteXFF     bool   `yaml:"overwriteXFF"` // override X-Forwarded-For
+	// TrustedPeers lists the CIDRs (or single IPs) of the TCP peers allowed to set the headers
+	// of this entry (e.g. the Cloudflare edge ranges). Empty = any peer (legacy behaviour).
+	// NOT the same as the unused "trustedProxies" key found in older configs.
+	TrustedPeers []string `yaml:"trustedPeers"`
+	// EraseHeader removes this entry's ProxyHeadername (the CDN secret) from the request once it matched,
+	// so the secret never reaches the backends or the access log. Unlike the global eraseProxyHeaders it
+	// does NOT touch RealIP (Cf-Connecting-Ip), which the access log / Loki dashboards rely on.
+	EraseHeader bool `yaml:"eraseHeader"`
 }
 
 // Config the plugin configuration.
@@ -29,6 +44,14 @@ type Config struct {
 	EnableLog         bool    `yaml:"enableLog"`         // Enable logging output
 	Deny403OnFail     bool    `yaml:"deny403OnFail"`     // Return 403 when no matching CDN header found
 	EraseProxyHeaders bool    `yaml:"eraseProxyHeaders"` // Erase CDN secret headers after processing
+	// SanitizeUnmatched: when no entry produced a client IP (e.g. the CDN secret header is missing or
+	// wrong), overwrite X-Real-Ip and X-Forwarded-For with the TCP peer so client-supplied values never pass.
+	SanitizeUnmatched bool `yaml:"sanitizeUnmatched"`
+	// VerifiedHeader, when set (e.g. "X-Eas-Verified"), names a request header the plugin ALWAYS owns: any
+	// client-supplied value is discarded and it is set to "1" when the client IP was resolved from a trusted
+	// source (trusted peer or valid CDN secret) and "0" otherwise. It lets the access log / CrowdSec tell a
+	// request that really came through the CDN from one that only claims to (decoy-header honeypot).
+	VerifiedHeader string `yaml:"verifiedHeader"`
 }
 
 // CreateConfig creates the default plugin configuration.
@@ -48,6 +71,52 @@ type GetRealIP struct {
 	enableLog         bool
 	deny403OnFail     bool
 	eraseProxyHeaders bool
+	peers             [][]*net.IPNet // parsed TrustedPeers, same index as proxy; nil = any peer
+	restrict          bool           // at least one entry restricts its peers
+	sanitizeUnmatched bool
+	verifiedHeader    string
+}
+
+// parsePeers turns CIDRs / plain IPs into networks. Invalid entries are skipped, so a typo
+// can never open the entry to everyone: a restricted entry whose list is all invalid trusts nobody.
+func parsePeers(entries []string) []*net.IPNet {
+	nets := []*net.IPNet{}
+	for _, e := range entries {
+		e = strings.TrimSpace(e)
+		if _, n, err := net.ParseCIDR(e); err == nil {
+			nets = append(nets, n)
+			continue
+		}
+		if ip := net.ParseIP(e); ip != nil {
+			bits := 128
+			if ip.To4() != nil {
+				bits = 32
+			}
+			nets = append(nets, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+		}
+	}
+	return nets
+}
+
+// peerIP returns the TCP peer address of the request (no port).
+func peerIP(req *http.Request) net.IP {
+	host, _, err := net.SplitHostPort(req.RemoteAddr)
+	if err != nil {
+		host = req.RemoteAddr
+	}
+	return net.ParseIP(host)
+}
+
+func inNets(ip net.IP, nets []*net.IPNet) bool {
+	if ip == nil {
+		return false
+	}
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // New creates and returns a new realip plugin instance.
@@ -55,7 +124,20 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	// Always log instance creation regardless of log settings
 	fmt.Printf("[get-realip] Instance created with %d proxy configurations\n", len(config.Proxy))
 
+	peers := make([][]*net.IPNet, len(config.Proxy))
+	restrict := false
+	for i, p := range config.Proxy {
+		if len(p.TrustedPeers) > 0 {
+			peers[i] = parsePeers(p.TrustedPeers)
+			restrict = true
+		}
+	}
+
 	return &GetRealIP{
+		peers:             peers,
+		restrict:          restrict,
+		sanitizeUnmatched: config.SanitizeUnmatched,
+		verifiedHeader:    config.VerifiedHeader,
 		next:              next,
 		name:              name,
 		proxy:             config.Proxy,
@@ -67,15 +149,39 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 // 真正干事情了
 func (g *GetRealIP) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	if req.Context().Value(verifiedCtxKey) != nil {
+		g.log("Already resolved by an earlier pass, skipping")
+		g.next.ServeHTTP(rw, req)
+		return
+	}
+
+	if g.verifiedHeader != "" {
+		req.Header.Del(g.verifiedHeader)
+	}
+
 	var realIPStr string
 	var foundMatchingProxy bool
 	var matchedProxy Proxy
 
-	for _, proxy := range g.proxy {
+	peer := peerIP(req)
+
+	for idx, proxy := range g.proxy {
+		if g.peers[idx] != nil && !inNets(peer, g.peers[idx]) {
+			g.log("Skipping entry %d: peer %v is not in trustedPeers", idx, peer)
+			continue
+		}
+		// A secret-gated entry with an empty secret would match every request that lacks the header
+		// (empty == empty): treat it as misconfigured and never use it.
+		if proxy.ProxyHeadername != "*" && proxy.ProxyHeadervalue == "" {
+			g.log("Skipping entry %d: %s has an empty proxyHeadervalue", idx, proxy.ProxyHeadername)
+			continue
+		}
 		if proxy.ProxyHeadername == "*" || req.Header.Get(proxy.ProxyHeadername) == proxy.ProxyHeadervalue {
 			foundMatchingProxy = true
 			matchedProxy = proxy
-			g.log("Processing proxy configuration: %s (%s)", proxy.ProxyHeadervalue, proxy.ProxyHeadername)
+			// Never log proxyHeadervalue: for a secret-header entry it IS the Cloudflare edge secret, and this log is a
+			// world-readable file (found 2026-10-29: the secret was written there on every request).
+			g.log("Processing proxy configuration: entry %d (%s)", idx, proxy.ProxyHeadername)
 
 			// CDN来源确定
 			nIP := req.Header.Get(proxy.RealIP)
@@ -115,6 +221,25 @@ func (g *GetRealIP) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Drop the CDN secret of the entry that matched (keeps Cf-Connecting-Ip for logs/dashboards).
+	if foundMatchingProxy && realIPStr != "" && matchedProxy.EraseHeader && matchedProxy.ProxyHeadername != "*" {
+		req.Header.Del(matchedProxy.ProxyHeadername)
+	}
+
+	// Restricted mode (or sanitizeUnmatched) and nothing was trusted: never let client-supplied
+	// forwarding headers through.
+	if (g.restrict || g.sanitizeUnmatched) && realIPStr == "" && peer != nil {
+		req.Header.Set(xRealIP, peer.String())
+		req.Header.Set(xForwardedFor, peer.String())
+		// The configured "real IP" headers (Cf-Connecting-Ip) came from an untrusted sender: remove them so
+		// access logs and dashboards never record a client-chosen IP as if it were the real one.
+		for _, p := range g.proxy {
+			if p.RealIP != "" && p.RealIP != "RemoteAddr" && http.CanonicalHeaderKey(p.RealIP) != xForwardedFor {
+				req.Header.Del(p.RealIP)
+			}
+		}
+	}
+
 	// Erase CDN secret headers if enabled and we found a matching proxy
 	if g.eraseProxyHeaders && foundMatchingProxy {
 		g.log("Erasing CDN secret headers")
@@ -129,6 +254,18 @@ func (g *GetRealIP) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			req.Header.Del(matchedProxy.RealIP)
 			g.log("Erased header: %s", matchedProxy.RealIP)
 		}
+	}
+
+	if g.verifiedHeader != "" {
+		if realIPStr != "" {
+			req.Header.Set(g.verifiedHeader, "1")
+		} else {
+			req.Header.Set(g.verifiedHeader, "0")
+		}
+	}
+
+	if realIPStr != "" {
+		req = req.WithContext(context.WithValue(req.Context(), verifiedCtxKey, realIPStr))
 	}
 
 	g.next.ServeHTTP(rw, req)
