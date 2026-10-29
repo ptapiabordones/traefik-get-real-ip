@@ -166,3 +166,68 @@ func TestClientCannotFakeAnEarlierPass(t *testing.T) {
 		t.Fatalf("X-Real-Ip = %q, want the peer", got)
 	}
 }
+
+func verifiedConfig(erase bool) *plugin.Config {
+	cfg := secretConfig(erase, true)
+	cfg.VerifiedHeader = "X-Eas-Verified"
+	return cfg
+}
+
+// Valid secret => the marker says "1".
+func TestVerifiedHeaderIsOneForTrustedRequests(t *testing.T) {
+	h := run(t, verifiedConfig(true), "192.168.1.254:5000", map[string]string{"X-Eas-Edge": edgeSecret, "Cf-Connecting-Ip": "203.0.113.9"})
+	if got := h.Get("X-Eas-Verified"); got != "1" {
+		t.Fatalf("X-Eas-Verified = %q, want 1", got)
+	}
+}
+
+// The honeypot case: a request that carries the decoy header but not the secret is marked "0".
+func TestVerifiedHeaderIsZeroForDecoyWithoutSecret(t *testing.T) {
+	h := run(t, verifiedConfig(true), "54.255.189.178:5000", map[string]string{"X-From-Cdn": "cf-foo", "Cf-Connecting-Ip": "203.0.113.9"})
+	if got := h.Get("X-Eas-Verified"); got != "0" {
+		t.Fatalf("X-Eas-Verified = %q, want 0", got)
+	}
+	if got := h.Get("X-From-Cdn"); got != "cf-foo" {
+		t.Fatalf("the decoy header must stay visible for the log: %q", got)
+	}
+}
+
+// A client cannot claim to be verified.
+func TestClientCannotForgeTheVerifiedMarker(t *testing.T) {
+	h := run(t, verifiedConfig(true), "54.255.189.178:5000", map[string]string{"X-Eas-Verified": "1", "Cf-Connecting-Ip": "203.0.113.9"})
+	if got := h.Get("X-Eas-Verified"); got != "0" {
+		t.Fatalf("X-Eas-Verified = %q, a forged 1 must become 0", got)
+	}
+}
+
+// Two passes (entrypoint + router) keep a trusted request at 1 and an untrusted one at 0.
+func TestVerifiedHeaderSurvivesTwoPasses(t *testing.T) {
+	ok := chain(t, verifiedConfig(true), "192.168.1.254:5000", map[string]string{"X-Eas-Edge": edgeSecret, "Cf-Connecting-Ip": "203.0.113.9"})
+	if got := ok.Get("X-Eas-Verified"); got != "1" {
+		t.Fatalf("trusted after two passes: X-Eas-Verified = %q, want 1", got)
+	}
+	bad := chain(t, verifiedConfig(true), "192.168.1.254:5000", map[string]string{"X-From-Cdn": "cf-foo", "X-Eas-Verified": "1"})
+	if got := bad.Get("X-Eas-Verified"); got != "0" {
+		t.Fatalf("untrusted after two passes: X-Eas-Verified = %q, want 0", got)
+	}
+}
+
+// With trustedPeers (ms1) the marker follows the peer check.
+func TestVerifiedHeaderWithTrustedPeers(t *testing.T) {
+	cfg := cfConfig("173.245.48.0/20")
+	cfg.VerifiedHeader = "X-Eas-Verified"
+	if got := run(t, cfg, "173.245.48.10:51000", map[string]string{"Cf-Connecting-Ip": "203.0.113.9"}).Get("X-Eas-Verified"); got != "1" {
+		t.Fatalf("Cloudflare peer: X-Eas-Verified = %q, want 1", got)
+	}
+	if got := run(t, cfg, "54.255.189.178:5000", map[string]string{"Cf-Connecting-Ip": "203.0.113.9", "X-From-Cdn": "cf-foo"}).Get("X-Eas-Verified"); got != "0" {
+		t.Fatalf("direct peer: X-Eas-Verified = %q, want 0", got)
+	}
+}
+
+// Disabled by default: no header is added or touched.
+func TestVerifiedHeaderOffByDefault(t *testing.T) {
+	h := run(t, secretConfig(true, true), "192.168.1.254:5000", map[string]string{"X-Eas-Edge": edgeSecret, "Cf-Connecting-Ip": "203.0.113.9"})
+	if _, ok := h["X-Eas-Verified"]; ok {
+		t.Fatalf("marker added although verifiedHeader is not configured")
+	}
+}

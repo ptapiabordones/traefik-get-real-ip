@@ -47,6 +47,11 @@ type Config struct {
 	// SanitizeUnmatched: when no entry produced a client IP (e.g. the CDN secret header is missing or
 	// wrong), overwrite X-Real-Ip and X-Forwarded-For with the TCP peer so client-supplied values never pass.
 	SanitizeUnmatched bool `yaml:"sanitizeUnmatched"`
+	// VerifiedHeader, when set (e.g. "X-Eas-Verified"), names a request header the plugin ALWAYS owns: any
+	// client-supplied value is discarded and it is set to "1" when the client IP was resolved from a trusted
+	// source (trusted peer or valid CDN secret) and "0" otherwise. It lets the access log / CrowdSec tell a
+	// request that really came through the CDN from one that only claims to (decoy-header honeypot).
+	VerifiedHeader string `yaml:"verifiedHeader"`
 }
 
 // CreateConfig creates the default plugin configuration.
@@ -69,6 +74,7 @@ type GetRealIP struct {
 	peers             [][]*net.IPNet // parsed TrustedPeers, same index as proxy; nil = any peer
 	restrict          bool           // at least one entry restricts its peers
 	sanitizeUnmatched bool
+	verifiedHeader    string
 }
 
 // parsePeers turns CIDRs / plain IPs into networks. Invalid entries are skipped, so a typo
@@ -131,6 +137,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		peers:             peers,
 		restrict:          restrict,
 		sanitizeUnmatched: config.SanitizeUnmatched,
+		verifiedHeader:    config.VerifiedHeader,
 		next:              next,
 		name:              name,
 		proxy:             config.Proxy,
@@ -146,6 +153,10 @@ func (g *GetRealIP) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		g.log("Already resolved by an earlier pass, skipping")
 		g.next.ServeHTTP(rw, req)
 		return
+	}
+
+	if g.verifiedHeader != "" {
+		req.Header.Del(g.verifiedHeader)
 	}
 
 	var realIPStr string
@@ -240,6 +251,14 @@ func (g *GetRealIP) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		if matchedProxy.RealIP != "RemoteAddr" && matchedProxy.RealIP != xForwardedFor {
 			req.Header.Del(matchedProxy.RealIP)
 			g.log("Erased header: %s", matchedProxy.RealIP)
+		}
+	}
+
+	if g.verifiedHeader != "" {
+		if realIPStr != "" {
+			req.Header.Set(g.verifiedHeader, "1")
+		} else {
+			req.Header.Set(g.verifiedHeader, "0")
 		}
 	}
 
